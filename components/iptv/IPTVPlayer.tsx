@@ -2,7 +2,8 @@
 
 /**
  * IPTVPlayer - Lightweight player for IPTV live streams
- * Uses HLS.js for playback with a channel switching sidebar
+ * Uses HLS.js for playback with a channel switching sidebar.
+ * Routes streams through /api/iptv/stream proxy to avoid CORS issues.
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react';
@@ -15,6 +16,10 @@ interface IPTVPlayerProps {
   onClose: () => void;
   channels: M3UChannel[];
   onChannelChange: (channel: M3UChannel) => void;
+}
+
+function getProxiedUrl(url: string): string {
+  return `/api/iptv/stream?url=${encodeURIComponent(url)}`;
 }
 
 export function IPTVPlayer({ channel, onClose, channels, onChannelChange }: IPTVPlayerProps) {
@@ -37,62 +42,117 @@ export function IPTVPlayer({ channel, onClose, channels, onChannelChange }: IPTV
       hlsRef.current = null;
     }
 
-    const url = ch.url;
+    const originalUrl = ch.url;
+    const proxiedUrl = getProxiedUrl(originalUrl);
 
-    if (url.endsWith('.m3u8') || url.includes('.m3u8')) {
-      if (Hls.isSupported()) {
-        const hls = new Hls({
+    // Try HLS.js first for all URLs (many IPTV streams are HLS even without .m3u8 extension)
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        liveDurationInfinity: true,
+      });
+      hlsRef.current = hls;
+
+      let triedProxy = false;
+
+      const tryWithProxy = () => {
+        if (triedProxy) return;
+        triedProxy = true;
+        // Retry with proxied URL
+        hls.destroy();
+        const hlsProxy = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
           liveDurationInfinity: true,
         });
-        hlsRef.current = hls;
+        hlsRef.current = hlsProxy;
 
-        hls.loadSource(url);
-        hls.attachMedia(video);
+        hlsProxy.loadSource(proxiedUrl);
+        hlsProxy.attachMedia(video);
 
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        hlsProxy.on(Hls.Events.MANIFEST_PARSED, () => {
           setIsLoading(false);
           video.play().catch(() => {});
         });
 
-        hls.on(Hls.Events.ERROR, (_, data) => {
+        hlsProxy.on(Hls.Events.ERROR, (_, data) => {
           if (data.fatal) {
             setIsLoading(false);
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-              setError('网络错误，无法加载频道');
-            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-              hls.recoverMediaError();
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              hlsProxy.recoverMediaError();
             } else {
-              setError('播放错误，请尝试其他频道');
+              // Last resort: try direct video element
+              hlsProxy.destroy();
+              hlsRef.current = null;
+              tryDirectVideo(proxiedUrl);
             }
           }
         });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native HLS (Safari/iOS)
-        video.src = url;
-        video.addEventListener('loadedmetadata', () => {
+      };
+
+      // First try direct URL
+      hls.loadSource(originalUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setIsLoading(false);
+        video.play().catch(() => {});
+      });
+
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) {
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            // Likely CORS - try proxy
+            tryWithProxy();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+          } else {
+            tryWithProxy();
+          }
+        }
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS (Safari/iOS) - try direct first, fall back to proxy
+      tryNativeHls(video, originalUrl, proxiedUrl);
+    } else {
+      tryDirectVideo(originalUrl);
+    }
+
+    function tryNativeHls(vid: HTMLVideoElement, url: string, fallbackUrl: string) {
+      vid.src = url;
+      const onLoad = () => {
+        setIsLoading(false);
+        vid.play().catch(() => {});
+      };
+      const onError = () => {
+        vid.removeEventListener('loadedmetadata', onLoad);
+        // Try proxied URL
+        vid.src = fallbackUrl;
+        vid.addEventListener('loadedmetadata', () => {
           setIsLoading(false);
-          video.play().catch(() => {});
+          vid.play().catch(() => {});
         }, { once: true });
-        video.addEventListener('error', () => {
+        vid.addEventListener('error', () => {
           setIsLoading(false);
           setError('播放错误');
         }, { once: true });
-      } else {
-        setError('您的浏览器不支持 HLS 播放');
+      };
+      vid.addEventListener('loadedmetadata', onLoad, { once: true });
+      vid.addEventListener('error', onError, { once: true });
+    }
+
+    function tryDirectVideo(url: string) {
+      const vid = videoRef.current;
+      if (!vid) return;
+      vid.src = url;
+      vid.addEventListener('loadedmetadata', () => {
         setIsLoading(false);
-      }
-    } else {
-      // Direct video URL (mp4, etc.)
-      video.src = url;
-      video.addEventListener('loadedmetadata', () => {
-        setIsLoading(false);
-        video.play().catch(() => {});
+        vid.play().catch(() => {});
       }, { once: true });
-      video.addEventListener('error', () => {
+      vid.addEventListener('error', () => {
         setIsLoading(false);
-        setError('播放错误');
+        setError('播放错误，请尝试其他频道');
       }, { once: true });
     }
   }, []);

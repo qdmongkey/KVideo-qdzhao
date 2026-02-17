@@ -24,6 +24,8 @@ export function AccountSettings() {
   const [showConfigGen, setShowConfigGen] = useState(false);
   const [configEntries, setConfigEntries] = useState<ConfigEntry[]>([]);
   const [copied, setCopied] = useState(false);
+  const [removedAccounts, setRemovedAccounts] = useState<Set<number>>(new Set());
+  const [hasAdminPassword, setHasAdminPassword] = useState(false);
 
   useEffect(() => {
     setSessionState(getSession());
@@ -38,6 +40,7 @@ export function AccountSettings() {
       .then(res => res.json())
       .then(data => {
         if (data.accounts) setAccounts(data.accounts);
+        if (data.hasAdminPassword) setHasAdminPassword(data.hasAdminPassword);
       })
       .catch(() => {});
   }, []);
@@ -79,6 +82,33 @@ export function AccountSettings() {
     });
   };
 
+  // Load existing accounts into config generator (without passwords)
+  const loadExistingAccounts = () => {
+    // Filter out removed accounts and the standalone admin password account
+    const existingEntries: ConfigEntry[] = accounts
+      .filter((_, i) => !removedAccounts.has(i))
+      .filter(a => !(a.name === '管理员' && hasAdminPassword))
+      .map(a => ({
+        password: '',
+        name: a.name,
+        role: a.role,
+      }));
+    setConfigEntries(existingEntries);
+    setShowConfigGen(true);
+  };
+
+  // Remove account from visible list and track removal
+  const handleRemoveAccount = (index: number) => {
+    setRemovedAccounts(prev => {
+      const next = new Set(prev);
+      next.add(index);
+      return next;
+    });
+  };
+
+  // Get visible accounts (excluding removed ones)
+  const visibleAccounts = accounts.filter((_, i) => !removedAccounts.has(i));
+
   if (!hasAuth && !session) return null;
 
   return (
@@ -115,34 +145,69 @@ export function AccountSettings() {
         )}
 
         {/* Account List (Admin only) */}
-        {isAdmin && accounts.length > 0 && (
+        {isAdmin && visibleAccounts.length > 0 && (
           <div>
             <h3 className="text-sm font-medium text-[var(--text-color)] mb-3 flex items-center gap-2">
               <Icons.Users size={16} className="text-[var(--accent-color)]" />
               已配置的账户
             </h3>
             <div className="space-y-2">
-              {accounts.map((account, index) => (
-                <div
-                  key={index}
-                  className="flex items-center justify-between px-4 py-2.5 bg-[var(--glass-bg)] border border-[var(--glass-border)] rounded-[var(--radius-2xl)]"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-[var(--radius-full)] bg-[var(--accent-color)]/10 flex items-center justify-center text-[var(--accent-color)] font-bold text-sm border border-[var(--glass-border)]">
-                      {account.name.charAt(0)}
+              {accounts.map((account, index) => {
+                if (removedAccounts.has(index)) return null;
+                return (
+                  <div
+                    key={index}
+                    className="flex items-center justify-between px-4 py-2.5 bg-[var(--glass-bg)] border border-[var(--glass-border)] rounded-[var(--radius-2xl)]"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-[var(--radius-full)] bg-[var(--accent-color)]/10 flex items-center justify-center text-[var(--accent-color)] font-bold text-sm border border-[var(--glass-border)]">
+                        {account.name.charAt(0)}
+                      </div>
+                      <span className="text-sm text-[var(--text-color)]">{account.name}</span>
                     </div>
-                    <span className="text-sm text-[var(--text-color)]">{account.name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs px-2 py-0.5 rounded-[var(--radius-full)] ${
+                        account.role === 'admin'
+                          ? 'bg-[var(--accent-color)]/10 text-[var(--accent-color)]'
+                          : 'bg-[var(--glass-bg)] text-[var(--text-color-secondary)] border border-[var(--glass-border)]'
+                      }`}>
+                        {account.role === 'admin' ? '管理员' : '观众'}
+                      </span>
+                      <button
+                        onClick={() => handleRemoveAccount(index)}
+                        className="p-1 text-[var(--text-color-secondary)] hover:text-red-500 transition-colors cursor-pointer"
+                        title="移除账户"
+                      >
+                        <Icons.Trash size={14} />
+                      </button>
+                    </div>
                   </div>
-                  <span className={`text-xs px-2 py-0.5 rounded-[var(--radius-full)] ${
-                    account.role === 'admin'
-                      ? 'bg-[var(--accent-color)]/10 text-[var(--accent-color)]'
-                      : 'bg-[var(--glass-bg)] text-[var(--text-color-secondary)] border border-[var(--glass-border)]'
-                  }`}>
-                    {account.role === 'admin' ? '管理员' : '观众'}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
+
+            {/* Notice when accounts have been removed */}
+            {removedAccounts.size > 0 && (
+              <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-[var(--radius-2xl)]">
+                <p className="text-xs text-amber-400">
+                  已标记移除 {removedAccounts.size} 个账户。请使用下方配置生成器生成新的 <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">ACCOUNTS</code> 环境变量值并更新部署配置。
+                </p>
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={loadExistingAccounts}
+                    className="text-xs px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-[var(--radius-2xl)] transition-colors cursor-pointer"
+                  >
+                    生成新配置
+                  </button>
+                  <button
+                    onClick={() => setRemovedAccounts(new Set())}
+                    className="text-xs px-3 py-1 bg-[var(--glass-bg)] border border-[var(--glass-border)] text-[var(--text-color-secondary)] hover:text-[var(--text-color)] rounded-[var(--radius-2xl)] transition-colors cursor-pointer"
+                  >
+                    撤销
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -154,18 +219,33 @@ export function AccountSettings() {
                 <Icons.Settings size={16} className="text-[var(--accent-color)]" />
                 配置生成器
               </h3>
-              <button
-                onClick={() => setShowConfigGen(!showConfigGen)}
-                className="text-xs text-[var(--accent-color)] hover:underline cursor-pointer"
-              >
-                {showConfigGen ? '收起' : '展开'}
-              </button>
+              <div className="flex items-center gap-2">
+                {!showConfigGen && accounts.length > 0 && (
+                  <button
+                    onClick={loadExistingAccounts}
+                    className="text-xs text-[var(--text-color-secondary)] hover:text-[var(--accent-color)] transition-colors cursor-pointer"
+                  >
+                    导入现有账户
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowConfigGen(!showConfigGen)}
+                  className="text-xs text-[var(--accent-color)] hover:underline cursor-pointer"
+                >
+                  {showConfigGen ? '收起' : '展开'}
+                </button>
+              </div>
             </div>
 
             {showConfigGen && (
               <div className="space-y-4 p-4 bg-[var(--glass-bg)] border border-[var(--glass-border)] rounded-[var(--radius-2xl)]">
                 <p className="text-xs text-[var(--text-color-secondary)]">
                   添加账户条目后，将生成的 <code className="px-1 py-0.5 bg-[var(--glass-bg)] rounded text-[10px]">ACCOUNTS</code> 环境变量值复制到部署配置中。
+                  {configEntries.some(e => !e.password && e.name) && (
+                    <span className="text-amber-400 block mt-1">
+                      注意：导入的账户需要重新输入密码。
+                    </span>
+                  )}
                 </p>
 
                 {/* Entry List */}
@@ -178,7 +258,9 @@ export function AccountSettings() {
                           placeholder="密码"
                           value={entry.password}
                           onChange={(e) => updateConfigEntry(index, 'password', e.target.value)}
-                          className="flex-1 px-3 py-1.5 bg-[var(--glass-bg)] border border-[var(--glass-border)] rounded-[var(--radius-2xl)] text-sm text-[var(--text-color)] placeholder:text-[var(--text-color-secondary)]/50 focus:outline-none focus:border-[var(--accent-color)]"
+                          className={`flex-1 px-3 py-1.5 bg-[var(--glass-bg)] border rounded-[var(--radius-2xl)] text-sm text-[var(--text-color)] placeholder:text-[var(--text-color-secondary)]/50 focus:outline-none focus:border-[var(--accent-color)] ${
+                            !entry.password && entry.name ? 'border-amber-500/50' : 'border-[var(--glass-border)]'
+                          }`}
                         />
                         <input
                           type="text"
